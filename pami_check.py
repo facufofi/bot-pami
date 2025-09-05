@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# pami_check.py
+# pami_check.py (v2 - selectores robustos)
 import os, time, csv, smtplib, traceback
 from pathlib import Path
 from datetime import datetime
@@ -62,6 +62,7 @@ def send_email_with_optional_attachment(subject: str, html_body: str, attachment
 def _find_estado_select(page):
     """
     Localiza el <select> del filtro 'Estado' de forma robusta.
+    NO usa get_by_label. Prueba varias rutas por XPath/atributos.
     """
     # 1) Label cercano "Estado"
     loc = page.locator('xpath=//label[contains(normalize-space(),"Estado")]/following::select[1]')
@@ -85,21 +86,21 @@ def _find_estado_select(page):
     return page.locator("select").first
 
 def _click_boton_buscar(page):
-    # Botón <button> con texto "Buscar"
+    # <button> con texto "Buscar"
     try:
-        page.get_by_role("button", name="Buscar", exact=False).click()
+        page.locator('xpath=//button[contains(normalize-space(),"Buscar")]').first.click()
         return
     except Exception:
         pass
-    # Alternativa: <button> o <input> con valor/aria-label "Buscar"
-    page.locator('xpath=//button[contains(.,"Buscar")] | //input[contains(@value,"Buscar") or contains(@aria-label,"Buscar")]').first.click()
+    # Alternativa: <input> con value/aria-label "Buscar"
+    page.locator('xpath=//input[contains(@value,"Buscar") or contains(@aria-label,"Buscar")]').first.click()
 
 # ================== Flujo ==================
 def login_and_open_list(page):
-    page.set_default_timeout(40000)  # más tolerante a latencias
+    page.set_default_timeout(40000)  # tolerante a latencias
     page.goto(LOGIN_URL, wait_until="domcontentloaded")
 
-    # Intentar distintos nombres de campos de login
+    # Usuario
     try:
         page.fill('input[type="text"]', PORTAL_USER, timeout=10000)
     except Exception:
@@ -108,15 +109,17 @@ def login_and_open_list(page):
         except Exception:
             page.fill('input[name="user"]', PORTAL_USER, timeout=10000)
 
+    # Password
     try:
         page.fill('input[type="password"]', PORTAL_PASS, timeout=10000)
     except Exception:
         page.fill('input[name="password"]', PORTAL_PASS, timeout=10000)
 
+    # Ingresar
     try:
         page.click('button[type="submit"]', timeout=5000)
     except PwTimeout:
-        page.get_by_role("button", name="Ingresar", exact=False).click()
+        page.locator('xpath=//button[contains(.,"Ingresar")]').first.click()
 
     page.wait_for_load_state("networkidle")
     page.goto(LISTADO_URL, wait_until="networkidle")
@@ -145,13 +148,12 @@ def set_estado_and_search(page, estado_label: str):
 
     _click_boton_buscar(page)
     page.wait_for_load_state("networkidle")
-    time.sleep(0.8)  # pequeño settle para tablas con JS
+    time.sleep(0.8)  # settle
 
 def extract_table_rows(page):
     html = page.content()
     soup = BeautifulSoup(html, "lxml")
 
-    # Buscar una tabla con thead+tbody y filas
     tablas = soup.find_all("table")
     if not tablas:
         return []
@@ -209,12 +211,10 @@ def main():
 
         total = sum(c for _, c in resumen)
 
-        # Si no hay filas, no enviar correo
         if total == 0:
             print("Sin novedades. No se envía correo.")
             return
 
-        # CSV (si hay filas)
         fecha = datetime.now().strftime("%Y%m%d_%H%M")
         csv_path = SALIDA_DIR / f"pami_{fecha}.csv"
         try:
@@ -227,7 +227,6 @@ def main():
             csv_path = None
             print(f"Error guardando CSV: {e}")
 
-        # Email
         resumen_html = "<ul>" + "".join(
             f"<li><b>{est}:</b> {cant}</li>" for est, cant in resumen
         ) + f"</ul><p><b>Total:</b> {total}</p>"
