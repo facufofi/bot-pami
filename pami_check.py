@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# pami_check.py (v2 - selectores robustos)
+# pami_check.py (v3 - maneja sweet-alert overlay)
 import os, time, csv, smtplib, traceback
 from pathlib import Path
 from datetime import datetime
@@ -59,11 +59,33 @@ def send_email_with_optional_attachment(subject: str, html_body: str, attachment
         s.sendmail(ALERT_FROM, [ALERT_TO], msg.as_string())
 
 # ================== Helpers UI ==================
+def _dismiss_blocking_overlays(page):
+    """Cierra/descarta overlays/modales (SweetAlert) que bloquean clicks."""
+    try:
+        # ¿Existe overlay o modal?
+        if page.locator('.sweet-overlay, .sweet-alert').count() > 0:
+            # Intentar botones comunes dentro del modal
+            for label in ["Aceptar", "OK", "Entendido", "Continuar", "Cerrar", "Sí", "Si"]:
+                btn = page.locator(
+                    f'xpath=//div[contains(@class,"sweet-alert")]//button[contains(normalize-space(),"{label}")]'
+                )
+                if btn.count() > 0:
+                    btn.first.click()
+                    page.wait_for_timeout(200)
+                    break
+            # Escape por las dudas
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(150)
+        # Si aún quedan, removerlos por JS (último recurso)
+        if page.locator('.sweet-overlay, .sweet-alert').count() > 0:
+            page.evaluate("""document.querySelectorAll('.sweet-overlay, .sweet-alert')
+                             .forEach(e => e.remove())""")
+            page.wait_for_timeout(100)
+    except Exception:
+        pass
+
 def _find_estado_select(page):
-    """
-    Localiza el <select> del filtro 'Estado' de forma robusta.
-    NO usa get_by_label. Prueba varias rutas por XPath/atributos.
-    """
+    """Localiza el <select> del filtro 'Estado' de forma robusta (sin get_by_label)."""
     # 1) Label cercano "Estado"
     loc = page.locator('xpath=//label[contains(normalize-space(),"Estado")]/following::select[1]')
     if loc.count() > 0:
@@ -82,10 +104,12 @@ def _find_estado_select(page):
     if loc.count() > 0:
         return loc.first
 
-    # 3) Fallback: primer select visible (en esta vista suele ser Estado)
+    # 3) Fallback: primer select visible
     return page.locator("select").first
 
 def _click_boton_buscar(page):
+    """Hace click en 'Buscar' con fallbacks, tras limpiar overlays."""
+    _dismiss_blocking_overlays(page)
     # <button> con texto "Buscar"
     try:
         page.locator('xpath=//button[contains(normalize-space(),"Buscar")]').first.click()
@@ -93,11 +117,13 @@ def _click_boton_buscar(page):
     except Exception:
         pass
     # Alternativa: <input> con value/aria-label "Buscar"
-    page.locator('xpath=//input[contains(@value,"Buscar") or contains(@aria-label,"Buscar")]').first.click()
+    page.locator(
+        'xpath=//input[contains(@value,"Buscar") or contains(@aria-label,"Buscar")]'
+    ).first.click()
 
 # ================== Flujo ==================
 def login_and_open_list(page):
-    page.set_default_timeout(40000)  # tolerante a latencias
+    page.set_default_timeout(45000)  # un poco más tolerante
     page.goto(LOGIN_URL, wait_until="domcontentloaded")
 
     # Usuario
@@ -123,8 +149,10 @@ def login_and_open_list(page):
 
     page.wait_for_load_state("networkidle")
     page.goto(LISTADO_URL, wait_until="networkidle")
+    _dismiss_blocking_overlays(page)
 
 def set_estado_and_search(page, estado_label: str):
+    _dismiss_blocking_overlays(page)  # por si aparece al entrar
     sel = _find_estado_select(page)
     sel.wait_for(state="visible", timeout=15000)
 
@@ -148,12 +176,13 @@ def set_estado_and_search(page, estado_label: str):
 
     _click_boton_buscar(page)
     page.wait_for_load_state("networkidle")
-    time.sleep(0.8)  # settle
+    time.sleep(0.8)  # settle final
 
 def extract_table_rows(page):
     html = page.content()
     soup = BeautifulSoup(html, "lxml")
 
+    # Buscar una tabla con thead+tbody y filas
     tablas = soup.find_all("table")
     if not tablas:
         return []
@@ -211,10 +240,12 @@ def main():
 
         total = sum(c for _, c in resumen)
 
+        # Si no hay filas, no enviar correo
         if total == 0:
             print("Sin novedades. No se envía correo.")
             return
 
+        # CSV (si hay filas)
         fecha = datetime.now().strftime("%Y%m%d_%H%M")
         csv_path = SALIDA_DIR / f"pami_{fecha}.csv"
         try:
@@ -227,6 +258,7 @@ def main():
             csv_path = None
             print(f"Error guardando CSV: {e}")
 
+        # Email
         resumen_html = "<ul>" + "".join(
             f"<li><b>{est}:</b> {cant}</li>" for est, cant in resumen
         ) + f"</ul><p><b>Total:</b> {total}</p>"
