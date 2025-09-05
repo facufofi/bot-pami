@@ -1,1 +1,39 @@
+name: PAMI Bot
+
+on:
+  schedule:
+    - cron: "0 13 * * 1-5"  # 10:00 AR (lun-vie)
+    - cron: "0 17 * * 1-5"  # 14:00 AR (lun-vie)
+    - cron: "0 21 * * 1-5"  # 18:00 AR (lun-vie)
+  workflow_dispatch: {}      # permitir ejecutarlo manualmente
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python -m playwright install --with-deps
+
+      - name: Run script
+        env:
+          PORTAL_USER: ${{ secrets.PORTAL_USER }}
+          PORTAL_PASS: ${{ secrets.PORTAL_PASS }}
+          SMTP_USER:   ${{ secrets.SMTP_USER }}
+          SMTP_PASS:   ${{ secrets.SMTP_PASS }}
+          ALERT_TO:    ${{ secrets.ALERT_TO }}
+          ALERT_FROM:  ${{ secrets.ALERT_FROM }}
+        run: |
+          python pami_check.py
 
