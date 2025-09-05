@@ -36,6 +36,7 @@ ESTADOS_A_BUSCAR = [
 
 SALIDA_DIR = Path("salidas"); SALIDA_DIR.mkdir(exist_ok=True)
 
+# ================== Email ==================
 def send_email_with_optional_attachment(subject: str, html_body: str, attachment_path: Path | None):
     msg = MIMEMultipart()
     msg["From"] = ALERT_FROM
@@ -57,37 +58,100 @@ def send_email_with_optional_attachment(subject: str, html_body: str, attachment
         s.login(SMTP_USER, SMTP_PASS)
         s.sendmail(ALERT_FROM, [ALERT_TO], msg.as_string())
 
-def _select_estado_dropdown(page):
-    # 1) Preferir por label accesible
-    try:
-        return page.get_by_label("Estado").nth(0)
-    except Exception:
-        pass
-    # 2) Fallback: primer <select> visible
+# ================== Helpers UI ==================
+def _find_estado_select(page):
+    """
+    Localiza el <select> del filtro 'Estado' de forma robusta.
+    """
+    # 1) Label cercano "Estado"
+    loc = page.locator('xpath=//label[contains(normalize-space(),"Estado")]/following::select[1]')
+    if loc.count() > 0:
+        return loc.first
+
+    # 2) Atributos comunes en id/name
+    loc = page.locator(
+        'xpath=//select['
+        'contains(translate(@id,"ESTADO","estado"),"estado") or '
+        'contains(translate(@name,"ESTADO","estado"),"estado") or '
+        'contains(translate(@id,"EST","est"),"est") or '
+        'contains(translate(@name,"EST","est"),"est") or '
+        'contains(translate(@id,"STATUS","status"),"status") or '
+        'contains(translate(@name,"STATUS","status"),"status")]'
+    )
+    if loc.count() > 0:
+        return loc.first
+
+    # 3) Fallback: primer select visible (en esta vista suele ser Estado)
     return page.locator("select").first
 
+def _click_boton_buscar(page):
+    # Botón <button> con texto "Buscar"
+    try:
+        page.get_by_role("button", name="Buscar", exact=False).click()
+        return
+    except Exception:
+        pass
+    # Alternativa: <button> o <input> con valor/aria-label "Buscar"
+    page.locator('xpath=//button[contains(.,"Buscar")] | //input[contains(@value,"Buscar") or contains(@aria-label,"Buscar")]').first.click()
+
+# ================== Flujo ==================
 def login_and_open_list(page):
+    page.set_default_timeout(40000)  # más tolerante a latencias
     page.goto(LOGIN_URL, wait_until="domcontentloaded")
-    # Campos comunes (ajustables si hiciera falta)
-    page.fill('input[type="text"]', PORTAL_USER, timeout=10000)
-    page.fill('input[type="password"]', PORTAL_PASS, timeout=10000)
+
+    # Intentar distintos nombres de campos de login
+    try:
+        page.fill('input[type="text"]', PORTAL_USER, timeout=10000)
+    except Exception:
+        try:
+            page.fill('input[name="usuario"]', PORTAL_USER, timeout=10000)
+        except Exception:
+            page.fill('input[name="user"]', PORTAL_USER, timeout=10000)
+
+    try:
+        page.fill('input[type="password"]', PORTAL_PASS, timeout=10000)
+    except Exception:
+        page.fill('input[name="password"]', PORTAL_PASS, timeout=10000)
+
     try:
         page.click('button[type="submit"]', timeout=5000)
     except PwTimeout:
-        page.get_by_role("button", name="Ingresar").click()
+        page.get_by_role("button", name="Ingresar", exact=False).click()
+
     page.wait_for_load_state("networkidle")
     page.goto(LISTADO_URL, wait_until="networkidle")
 
 def set_estado_and_search(page, estado_label: str):
-    sel = _select_estado_dropdown(page)
-    sel.select_option(label=estado_label)
-    page.get_by_role("button", name="Buscar", exact=True).click()
+    sel = _find_estado_select(page)
+    sel.wait_for(state="visible", timeout=15000)
+
+    # Selección normal por label
+    try:
+        sel.select_option(label=estado_label)
+    except Exception:
+        # Fallback: forzar por JS comparando el texto del <option>
+        sel.evaluate(
+            """
+            (el, label) => {
+              const norm = s => (s || '').trim().replace(/\s+/g,' ');
+              const opt = Array.from(el.options).find(o => norm(o.textContent) === norm(label));
+              if (!opt) throw new Error('No se encontró opción con ese label');
+              el.value = opt.value;
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            """,
+            estado_label
+        )
+
+    _click_boton_buscar(page)
     page.wait_for_load_state("networkidle")
-    time.sleep(0.8)  # settle
+    time.sleep(0.8)  # pequeño settle para tablas con JS
 
 def extract_table_rows(page):
     html = page.content()
     soup = BeautifulSoup(html, "lxml")
+
+    # Buscar una tabla con thead+tbody y filas
     tablas = soup.find_all("table")
     if not tablas:
         return []
@@ -116,6 +180,7 @@ def extract_table_rows(page):
             rows.append({"cols": celdas})
     return rows
 
+# ================== Main ==================
 def main():
     if not all([PORTAL_USER, PORTAL_PASS, SMTP_USER, SMTP_PASS, ALERT_TO]):
         raise RuntimeError("Faltan variables de entorno obligatorias.")
@@ -144,12 +209,12 @@ def main():
 
         total = sum(c for _, c in resumen)
 
-        # Si no hay filas, no mandamos nada (comportamiento pedido)
+        # Si no hay filas, no enviar correo
         if total == 0:
             print("Sin novedades. No se envía correo.")
             return
 
-        # CSV
+        # CSV (si hay filas)
         fecha = datetime.now().strftime("%Y%m%d_%H%M")
         csv_path = SALIDA_DIR / f"pami_{fecha}.csv"
         try:
@@ -191,4 +256,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
