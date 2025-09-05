@@ -2,9 +2,9 @@ name: PAMI Bot
 
 on:
   schedule:
-    - cron: "0 13 * * 1-5"  # 10:00 AR (lun-vie)
-    - cron: "0 17 * * 1-5"  # 14:00 AR (lun-vie)
-    - cron: "0 21 * * 1-5"  # 18:00 AR (lun-vie)
+    - cron: "0 13 * * 1-5"  # 10:00 AR (lun–vie)
+    - cron: "0 17 * * 1-5"  # 14:00 AR (lun–vie)
+    - cron: "0 21 * * 1-5"  # 18:00 AR (lun–vie)
   workflow_dispatch: {}      # permitir ejecutarlo manualmente
 
 jobs:
@@ -36,4 +36,3 @@ jobs:
           ALERT_FROM:  ${{ secrets.ALERT_FROM }}
         run: |
           python pami_check.py
-
